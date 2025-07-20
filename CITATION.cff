@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this code, please cite it as below."
 authors:
-- family-names: "Qiongyuan"
-  given-names: "Wu"
+- family-names: "Wu"
+  given-names: "Qiongyuan"
   orcid: "https://orcid.org/0000-0003-2856-0440"
 title: "Simulation of a nanorod's dynamics"
 version: 0.0.1
