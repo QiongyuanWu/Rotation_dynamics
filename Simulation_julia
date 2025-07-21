@@ -1,9 +1,11 @@
 using DifferentialEquations, Plots, Statistics
 
+const kb_new = 1.38e-5
+
 # Drift (deterministic dynamics + damping)
 function drift!(du, u, p, t)
     # unpack parameters
-    m, I, Ic, αp, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, DcmPerp, DcmPar, DrotPerp, DrotPar = p
+    m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, T = p
 
     # unpack state
     x, y, z, px, py, pz, α, β, γ, pα, pβ, pγ = u
@@ -24,17 +26,16 @@ function drift!(du, u, p, t)
     cos2β = cos(2β)
 
     chi_term = (χ⊥/χp) + (Δχ/χp) * sinβ^2 * cosα^2
-
-    prefac = -(αp * E0^2) / 4 * expx * expy * coskz_sq
+    prefac = -(Vol * χp * E0^2) / 4
 
     # translational equations
     du[1] = px / m
     du[2] = py / m
     du[3] = pz / m
 
-    du[4] = prefac * (2x/Wx^2) * chi_term
-    du[5] = prefac * (2y/Wy^2) * chi_term
-    du[6] = -(αp * E0^2)/4 * expx * expy * k * sin2kz * chi_term
+    du[4] = prefac * (2x/Wx^2) * expx * expy * coskz_sq * chi_term
+    du[5] = prefac * (2y/Wy^2) * expx * expy * coskz_sq * chi_term
+    du[6] = prefac * expx * expy * k * sin2kz * chi_term
 
     # translational damping
     du[4] += -0.5 * px * (2*ΓcmPerp*sinα^2 + (ΓcmPar+ΓcmPerp - (ΓcmPar-ΓcmPerp)*cos2β) * cosα^2) -
@@ -50,35 +51,23 @@ function drift!(du, u, p, t)
          0.5 * pz * ((ΓcmPar+ΓcmPerp) + (ΓcmPar-ΓcmPerp)*cos2β)
     
     # rotational equations
-
     du[7] = (pα - pγ*cosβ) / (I*sin²β)
     du[8] = pβ / I
     du[9] = -cosβ*(pα-pγ*cosβ)/(I*sin²β) + pγ/Ic
 
-    du[10] = -(αp*E0^2)/4 * (Δχ/χp) * expx*expy*coskz_sq * sin²β * sin(2α)
+    du[10] = prefac * (Δχ/χp) * expx*expy*coskz_sq * sin²β * sin(2α)
     du[11] =
           (1/I) * (
             ((pα - cosβ*pγ)^2 / sin²β) * (cosβ/sinβ) -
             pγ*(pα-pγ*cosβ)/sinβ
-          ) +
-          (αp*E0^2)/4 * (Δχ/χp) * expx*expy*coskz_sq * sin2β * cos²α
-
+          ) -
+          prefac * (Δχ/χp) * expx*expy*coskz_sq * sin2β * cos²α
     du[12] = 0
 
     # rotational damping
     du[10] += -ΓrotPerp * pα - (ΓrotPar-ΓrotPerp) * pγ * cosβ
     du[11] += -ΓrotPerp * pβ
     du[12] += -ΓrotPar * pγ
-
-
-    du[1] = 0
-    du[4] = 0
-    du[2] = 0
-    du[5] = 0
-    du[8] = 0
-    du[11] = 0
-    du[9] = 0
-    du[12] = 0
 end
 
 function noise!(du, u, p, t)
@@ -86,12 +75,17 @@ function noise!(du, u, p, t)
     fill!(du, 0.0)
 
     # unpack parameters
-    m, I, Ic, αp, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, DcmPerp, DcmPar, DrotPerp, DrotPar = p
+    m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, T = p
+    kbT = kb_new*T
     α, β = u[7], u[8]
 
     # 2) precompute trig
     ca, sa = cos(α), sin(α)
     cb, sb = cos(β), sin(β)
+    DcmPerp = sqrt(2*ΓcmPerp*m*kbT)
+    DcmPar = sqrt(2*ΓcmPar*m*kbT)
+    DrotPerp = sqrt(2*ΓrotPerp*I*kbT)
+    DrotPar = sqrt(2*ΓrotPar*Ic*kbT)
     Δ   = DcmPar - DcmPerp
 
     # 3) fill the translational 3×3 block
@@ -110,26 +104,12 @@ function noise!(du, u, p, t)
     du[10,6] = cos(β) * DrotPar
     du[11,5] = DrotPerp
     du[12,6] = DrotPar
-
-    du[4,1] = 0
-    du[4,2] = 0
-    du[4,3] = 0
-    du[5,1] = 0
-    du[5,2] = 0
-    du[5,3] = 0
-    du[11,4] = 0
-    du[11,5] = 0
-    du[11,6] = 0
-    du[12,4] = 0
-    du[12,5] = 0
-    du[12,6] = 0
-    
 end
 
 # Energy function (kinetic + potential)
 function energy(u, p)
     # unpack parameters
-    m, I, Ic, αp, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, DcmPerp, DcmPar, DrotPerp, DrotPar = p
+    m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, T = p
 
     # unpack state
     x, y, z, px, py, pz, α, β, γ, pα, pβ, pγ = u
@@ -153,107 +133,57 @@ function energy(u, p)
 
     chi_term = (χ⊥/χp) + (Δχ/χp)*sinβ^2*cos(α)^2
 
-    U = - (αp * E0^2)/4 * expx*expy*coskz_sq * chi_term
+    U = - (Vol * χp * E0^2)/4 * expx * expy * coskz_sq * chi_term
 
     # total energy
     return T_trans + T_rot + U
 end
 
-# parameters (nanorod)
-m    = 15.4
-I    = 0.64 
-Ic   = 0.0257
-αp   = 0.077
-E0   = 5.89
-Wx   = 6.0
-Wy   = 6.0
+# parameters (nanorod experiment)
+T    = 300 # temperature
+p    = 1 # pressure in mbar
+ng   = 100*p/(kb_new*T) # gas density
+r    = 0.05 # short edge radius
+l    = 0.7 # long edge
+Pt   = 0.05e12 # power
+c    = 3e8 # speed of light
+Wx   = 6 # beam waist in x
+Wy   = 6 # beam waist in y
+ϵr   = 12 # polarizability
+mg   = (28.97e-3)/(6.022e23)*10^18 # speed of light
+
+Vol  = r^2 * l
+m    = 2300 * Vol
+I    = 1/12 * m * (r^2+l^2)
+Ic   = 1/6 * m * r^2
+E0   = 4Pt/(c * pi * Wx * Wy)
 k    = 2π/1.550
-χ⊥   = 1.69
-χp   = 11
-Δχ   = 9.31
-dfac = 1
-fac = 1
-extra = 0.04
-ΓcmPerp  = 0.0049 *dfac
-ΓcmPar  = 0.0007 *dfac
-ΓrotPerp  = 0.00486 *dfac
-ΓrotPar  = 0.004945 *dfac
-DcmPerp  = 0.025 *fac 
-DcmPar = 0.00949 *fac
-DrotPerp  = 0.005 *fac +extra
-DrotPar = 0.001 *fac +extra
+χ⊥   = 2(ϵr-1)/(ϵr+1)
+χp   = ϵr-1
+Δχ   = χp-χ⊥
+ΓcmPerp  = 4 * ng * r * l * sqrt(2*pi*mg*kb_new* T)/(pi * m)
+ΓcmPar  = 4 * ng * r * r * sqrt(2*pi*mg*kb_new* T)/(pi * m)
+ΓrotPerp  = (r*(l^3+r^3))/(r*l*(r^2+l^2)) * 4 * ng * r * l * sqrt(2*pi*mg*kb_new* T)/(pi * m)
+ΓrotPar  = (l*(r^3+r^3))/(r*r*(r^2+r^2)) * 4 * ng * r * r * sqrt(2*pi*mg*kb_new* T)/(pi * m)
 
-
-# I    = 0.1 
-# Ic   = 0.1
-# χ⊥   = 10
-# χp   = 10
-# Δχ   = 0
-
-# # parameters (sphere r=100nm)
-# m    = 6.91
-# I    = 0.03 
-# Ic   = 0.03
-# αp   = 0.034
-# E0   = 5.89
-# Wx   = 6.0
-# Wy   = 6.0
-# k    = 2π/1.550
-# χ⊥   = 1.69
-# χp   = 11
-# Δχ   = 9.31
-# dfac = 1
-# fac = 1
-# ΓcmPerp  = 0.011 *dfac
-# ΓcmPar  = 0.011 *dfac
-# ΓrotPerp  = 0.011 *dfac
-# ΓrotPar  = 0.011 *dfac
-# DcmPerp  = 0.025 *fac
-# DcmPar = 0.025 *fac
-# DrotPerp  = 0.001 *fac
-# DrotPar = 0.0001 *fac
-
-# # parameters (sphere r=700nm)
-# m    = 2370.65
-# I    = 193.603 
-# Ic   = 193.603
-# αp   = 11.85
-# E0   = 5.89
-# Wx   = 6.0
-# Wy   = 6.0
-# k    = 2π/1.550
-# χ⊥   = 1.69
-# χp   = 11
-# Δχ   = 9.31
-# dfac = 1
-# fac = 1
-# ΓcmPerp  = 0.0022 *dfac
-# ΓcmPar  = 0.0022 *dfac
-# ΓrotPerp  = 0.0022 *dfac
-# ΓrotPar  = 0.0022 *dfac
-# DcmPerp  = 0.21 *fac
-# DcmPar = 0.21 *fac
-# DrotPerp  = 0.06 *fac
-# DrotPar = 0.06 *fac
-
-params = (m, I, Ic, αp, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, DcmPerp, DcmPar, DrotPerp, DrotPar)
+params = (m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, T)
 
 # initial condition
 u0 = [
-    0, 0, 0.2,   # x, y, z
+    2, 1, 0.02,   # x, y, z
     0.15, -0.15, 0.0,   # px, py, pz
     0.0, π/2, 0.0,   # α, β, γ
     0.0, 0.0, 0.0    # pα, pβ, pγ
 ]
 
 # time span
-tspan = (0.0, 1000.0)
+tspan = (0.0, 2000.0)
 
 # set up and solve SDE
 f = SDEFunction(drift!, noise!)
 prob = SDEProblem(f, u0, tspan, params, noise_rate_prototype = zeros(12, 6))
 # sol = solve(prob, SRA3(),reltol=abstol=1e-6)
-sol = solve(prob, SOSRA(),reltol=abstol=1e-3)
+sol = solve(prob, SOSRA(),reltol=abstol=1e-5)
 # sol = solve(prob, EM(),dt=1e-4)
 
 # extract solution
@@ -267,7 +197,7 @@ u_low_energy = [
     0.0, π/2, 0.0,   # α, β, γ
     0.0, 0.0, 0.0    # pα, pβ, pγ
 ]
-kbT = 0.00414
+kbT = kb_new*T
 E = [(energy(sol.u[i], params)-energy(u_low_energy, params))/kbT for i in 1:length(sol)]
 
 # Plot results
@@ -275,14 +205,14 @@ t = sol.t
 x, y, z, px, py, pz, α, β, γ, pα, pβ, pγ = [sol[i, :] for i in 1:size(sol)[1]]
 
 # plots
-p1 = plot(t, [x y z], label=["x(t)" "y(t)" "z(t)"], linecolor=[:blue :red :green],link=:all, xlabel="time", ylabel="Position", title="Position vs Time", framestyle=:box, grid=true)
-p2 = plot(t, [pz px py], label=["pz(t)" "px(t)" "py(t)"], linecolor=[:green :blue :red],link=:all, xlabel="time", ylabel="Position Momenum", title="Momentum vs Time", framestyle=:box, grid=true)
-p3 = plot(t, E, xlabel="time", ylabel="Energy / kb T", label="E(t)", title="Total Energy of the System", framestyle=:box, grid=true, legend=false)
-p4 = plot(t, [α β γ], label=["α(t)" "β(t)" "γ(t)"], linecolor=[:blue :red :green], link=:all, linestyle=:dash, xlabel="time", ylabel="Radian", framestyle=:box, grid=true)
-p5 = plot(t, [pα pβ pγ], label=["pα(t)" "pβ(t)" "pγ(t)"], linecolor=[:blue :red :green], link=:all, linestyle=:dash, xlabel="time", ylabel="Angle Momentum", framestyle=:box, grid=true)
+p1 = plot(t, [x y z], label=["x(t)" "y(t)" "z(t)"], linecolor=[:blue :red :green],link=:all, xlabel="time (μs)", ylabel="Position (μm)", framestyle=:box, grid=true)
+p2 = plot(t, [pz px py], label=["pz(t)" "px(t)" "py(t)"], linecolor=[:green :blue :red],link=:all, xlabel="time (μs)", ylabel="Momenum", framestyle=:box, grid=true)
+p3 = plot(t, E, xlabel="time (μs)", ylabel="Energy / kb T", label="E(t)", framestyle=:box, grid=true, legend=false)
+p4 = plot(t, [α β γ], label=["α(t)" "β(t)" "γ(t)"], linecolor=[:blue :red :green], link=:all, linestyle=:dash, xlabel="time (μs)", ylabel="Angle (rad)", framestyle=:box, grid=true)
+p5 = plot(t, [pα pβ pγ], label=["pα(t)" "pβ(t)" "pγ(t)"], linecolor=[:blue :red :green], link=:all, linestyle=:dash, xlabel="time (μs)", ylabel="Angular Momentum", framestyle=:box, grid=true)
 
 # Display the combined plot
-combined_plot = plot(p1, p2, p3, p4, p5, layout=(2, 3), size=(1200, 500), link   = :x, margin = 5Plots.mm)
+combined_plot = plot(p1, p2, p3, p4, p5, layout=(2, 3), size=(1100, 700), link   = :x, margin = 5Plots.mm)
 display(combined_plot)
 
 # ----------------------------------------------#
