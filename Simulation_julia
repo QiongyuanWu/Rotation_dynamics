@@ -1,11 +1,12 @@
-using DifferentialEquations, Plots, Statistics
+using DifferentialEquations, Plots, Statistics, Printf
 
+# here we pick units to be kg->fg, m->μm, s->μs
 const kb_new = 1.38e-5
 
 # Drift (deterministic dynamics + damping)
 function drift!(du, u, p, t)
     # unpack parameters
-    m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, T = p
+    m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, DcmPerp, DcmPar, DrotPerp, DrotPar = p
 
     # unpack state
     x, y, z, px, py, pz, α, β, γ, pα, pβ, pγ = u
@@ -20,13 +21,16 @@ function drift!(du, u, p, t)
     sinβ = sin(β)
     cosα = cos(α)
     cosβ = cos(β)
-    sin²β = sinβ^2
-    cos²α = cosα^2
+    sinα_sq = sinα^2
+    cosα_sq = cosα^2
+    sinβ_sq = sinβ^2
+    cosβ_sq = cosβ^2
+    sin2α = sin(2α)
     sin2β = sin(2β)
     cos2β = cos(2β)
 
-    chi_term = (χ⊥/χp) + (Δχ/χp) * sinβ^2 * cosα^2
-    prefac = -(Vol * χp * E0^2) / 4
+    chi_term = (χ⊥/χp) + (Δχ/χp) * sinβ_sq * cosα_sq
+    prefac = -pref*(Vol * χp * E0^2) / 4
 
     # translational equations
     du[1] = px / m
@@ -38,12 +42,12 @@ function drift!(du, u, p, t)
     du[6] = prefac * expx * expy * k * sin2kz * chi_term
 
     # translational damping
-    du[4] += -0.5 * px * (2*ΓcmPerp*sinα^2 + (ΓcmPar+ΓcmPerp - (ΓcmPar-ΓcmPerp)*cos2β) * cosα^2) -
-         py * (ΓcmPar-ΓcmPerp) * sinα*cosα*sinβ^2 -
+    du[4] += -0.5 * px * (2*ΓcmPerp*sinα_sq + ((ΓcmPar+ΓcmPerp) - (ΓcmPar-ΓcmPerp)*cos2β) * cosα_sq) -
+         py * (ΓcmPar-ΓcmPerp) * sinα*cosα*sinβ_sq -
          pz * (ΓcmPar-ΓcmPerp) * cosα*sinβ*cosβ
 
-    du[5] += -px * (ΓcmPar-ΓcmPerp) * sinα*cosα*sinβ^2 -
-         py * ((ΓcmPar*sinβ^2 + ΓcmPerp*cosβ^2)*sinα^2 + ΓcmPerp*cosα^2) -
+    du[5] += -px * (ΓcmPar-ΓcmPerp) * sinα*cosα*sinβ_sq -
+         py * ((ΓcmPar*sinβ_sq + ΓcmPerp*cosβ_sq)*sinα_sq + ΓcmPerp*cosα_sq) -
          pz * (ΓcmPar-ΓcmPerp) * sinα*sinβ*cosβ
 
     du[6] += -px * (ΓcmPar-ΓcmPerp) * cosα*sinβ*cosβ -
@@ -51,17 +55,17 @@ function drift!(du, u, p, t)
          0.5 * pz * ((ΓcmPar+ΓcmPerp) + (ΓcmPar-ΓcmPerp)*cos2β)
     
     # rotational equations
-    du[7] = (pα - pγ*cosβ) / (I*sin²β)
+    du[7] = (pα - pγ*cosβ) / (I*sinβ_sq)
     du[8] = pβ / I
-    du[9] = -cosβ*(pα-pγ*cosβ)/(I*sin²β) + pγ/Ic
+    du[9] = -cosβ*(pα-pγ*cosβ)/(I*sinβ_sq) + pγ/Ic
 
-    du[10] = prefac * (Δχ/χp) * expx*expy*coskz_sq * sin²β * sin(2α)
+    du[10] = prefac * (Δχ/χp) * expx*expy*coskz_sq * sinβ_sq * sin2α
     du[11] =
           (1/I) * (
-            ((pα - cosβ*pγ)^2 / sin²β) * (cosβ/sinβ) -
+            ((pα - cosβ*pγ)^2 / sinβ_sq) * (cosβ/sinβ) -
             pγ*(pα-pγ*cosβ)/sinβ
           ) -
-          prefac * (Δχ/χp) * expx*expy*coskz_sq * sin2β * cos²α
+          prefac * (Δχ/χp) * expx*expy*coskz_sq * sin2β * cosα_sq
     du[12] = 0
 
     # rotational damping
@@ -75,17 +79,12 @@ function noise!(du, u, p, t)
     fill!(du, 0.0)
 
     # unpack parameters
-    m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, T = p
-    kbT = kb_new*T
+    m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, DcmPerp, DcmPar, DrotPerp, DrotPar = p
     α, β = u[7], u[8]
 
     # 2) precompute trig
     ca, sa = cos(α), sin(α)
     cb, sb = cos(β), sin(β)
-    DcmPerp = sqrt(2*ΓcmPerp*m*kbT)
-    DcmPar = sqrt(2*ΓcmPar*m*kbT)
-    DrotPerp = sqrt(2*ΓrotPerp*I*kbT)
-    DrotPar = sqrt(2*ΓrotPar*Ic*kbT)
     Δ   = DcmPar - DcmPerp
 
     # 3) fill the translational 3×3 block
@@ -109,21 +108,21 @@ end
 # Energy function (kinetic + potential)
 function energy(u, p)
     # unpack parameters
-    m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, T = p
+    m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, DcmPerp, DcmPar, DrotPerp, DrotPar = p
 
     # unpack state
     x, y, z, px, py, pz, α, β, γ, pα, pβ, pγ = u
 
     # kinetic energies
-    T_trans = (px^2 + py^2 + pz^2) / (2m)
+    T_trans = (px^2 + py^2 + pz^2) / (2*m)
 
     sinβ = sin(β)
     cosβ = cos(β)
 
     T_rot =
-    (pβ^2) / (2I) +
-    ((pα - pγ*cosβ)^2) / (2I*sinβ^2) +
-    (pγ^2) / (2Ic)
+    (pβ^2) / (2*I) +
+    ((pα - pγ*cosβ)^2) / (2*I*sinβ^2) +
+    (pγ^2) / (2*Ic)
 
     # potential energy
     expx = exp(-x^2 / Wx^2)
@@ -133,58 +132,77 @@ function energy(u, p)
 
     chi_term = (χ⊥/χp) + (Δχ/χp)*sinβ^2*cos(α)^2
 
-    U = - (Vol * χp * E0^2)/4 * expx * expy * coskz_sq * chi_term
+    U = - pref*(Vol * χp * E0^2)/4 * expx * expy * coskz_sq * chi_term
 
     # total energy
-    return T_trans + T_rot + U
+    return T_trans  + T_rot + U
 end
 
 # parameters (nanorod experiment)
 T    = 300 # temperature
 p    = 1 # pressure in mbar
 ng   = 100*p/(kb_new*T) # gas density
-r    = 0.05 # short edge radius
-l    = 0.7 # long edge
-Pt   = 0.05e12 # power
+r    = 0.1 # short edge radius (μm)
+l    = 0.7 # long edge (μm)
+Pt   = 0.05e12 # power in Watts
 c    = 3e8 # speed of light
-Wx   = 6 # beam waist in x
-Wy   = 6 # beam waist in y
-ϵr   = 12 # polarizability
-mg   = (28.97e-3)/(6.022e23)*10^18 # speed of light
+Wx   = 6 # beam waist in x (μm)
+Wy   = 6 # beam waist in y (μm)
+ϵr   = 12 # relative polarizability
+mg   = (28.97e-3)/(6.022e23)*1e18 # air molecular mass
 
-Vol  = r^2 * l
-m    = 2300 * Vol
-I    = 1/12 * m * (r^2+l^2)
-Ic   = 1/6 * m * r^2
-E0   = 4Pt/(c * pi * Wx * Wy)
-k    = 2π/1.550
-χ⊥   = 2(ϵr-1)/(ϵr+1)
-χp   = ϵr-1
+# # sphere
+# r    = 0.2 # short edge radius
+# l    = 0.40000001 # long edge
+
+pref = 1 # prefactor for changing the potential depth
+Vol  = r^2 * l # volumn of the particle
+m    = 2300 * Vol # mass of the particle (silicon)
+I    = 1/12 * m * (r^2+l^2) # inertia along the short edge
+Ic   = 1/6 * m * r^2 # inertia along the long edge
+E0   = sqrt(4Pt/(c * pi * Wx * Wy)) # electric field strength
+k    = 2π/1.550 # wave number
+
+# susceptibilities of a prolate spheroid
+eVal=sqrt(1-r^2/((l/2)^2))
+Npara= (1-eVal^2)/(2*eVal^3)*(log((1+eVal)/(1-eVal))-2*eVal)
+Nperp= 1/2*(1-Npara)
+χp = (ϵr-1)/(1 + Npara*(ϵr-1))
+χ⊥ = (ϵr-1)/(1 + Nperp*(ϵr-1))
 Δχ   = χp-χ⊥
+
+# noise terms
 ΓcmPerp  = 4 * ng * r * l * sqrt(2*pi*mg*kb_new* T)/(pi * m)
 ΓcmPar  = 4 * ng * r * r * sqrt(2*pi*mg*kb_new* T)/(pi * m)
 ΓrotPerp  = (r*(l^3+r^3))/(r*l*(r^2+l^2)) * 4 * ng * r * l * sqrt(2*pi*mg*kb_new* T)/(pi * m)
 ΓrotPar  = (l*(r^3+r^3))/(r*r*(r^2+r^2)) * 4 * ng * r * r * sqrt(2*pi*mg*kb_new* T)/(pi * m)
+DcmPerp = sqrt(2*ΓcmPerp*m*kb_new*(T))
+DcmPar = sqrt(2*ΓcmPar*m*kb_new*(T))
+DrotPerp = sqrt(2*ΓrotPerp*I*kb_new*(T))
+DrotPar = sqrt(2*ΓrotPar*Ic*kb_new*(T))
 
-params = (m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, T)
+# all parameters for the simulation
+params = (m, I, Ic, Vol, E0, Wx, Wy, k, χ⊥, χp, Δχ, ΓcmPerp, ΓcmPar, ΓrotPerp, ΓrotPar, DcmPerp, DcmPar, DrotPerp, DrotPar)
 
 # initial condition
 u0 = [
-    2, 1, 0.02,   # x, y, z
-    0.15, -0.15, 0.0,   # px, py, pz
+    0.5, -0.5, 0.1,   # x, y, z
+    0.0, 0.0, 0.0,   # px, py, pz
     0.0, π/2, 0.0,   # α, β, γ
     0.0, 0.0, 0.0    # pα, pβ, pγ
 ]
 
 # time span
-tspan = (0.0, 2000.0)
+tlength=2000.0
+tspan = (0.0,tlength)
+tsave = (0.0:0.1:tlength)
 
 # set up and solve SDE
 f = SDEFunction(drift!, noise!)
 prob = SDEProblem(f, u0, tspan, params, noise_rate_prototype = zeros(12, 6))
-# sol = solve(prob, SRA3(),reltol=abstol=1e-6)
-sol = solve(prob, SOSRA(),reltol=abstol=1e-5)
-# sol = solve(prob, EM(),dt=1e-4)
+# sol = solve(prob, SRA3(),reltol=abstol=1e-15,dt=1e-10,saveat=tsave,maxiters=Inf)
+sol = solve(prob, SOSRA(),reltol=abstol=1e-10,dt=1e-8,saveat=tsave,maxiters=Inf)
+# sol = solve(prob, EM(),dt=1e-2)
 
 # extract solution
 t = sol.t
@@ -199,6 +217,10 @@ u_low_energy = [
 ]
 kbT = kb_new*T
 E = [(energy(sol.u[i], params)-energy(u_low_energy, params))/kbT for i in 1:length(sol)]
+trapDepth = Vol * χp * E0^2 / 4
+@printf("The trap depth is %.2f kbT. ",trapDepth/kbT)
+@printf("The initial energy is %.2f kbT. ",first(E))
+@printf("The final energy is %.2f kbT. ",last(E))
 
 # Plot results
 t = sol.t
@@ -208,11 +230,12 @@ x, y, z, px, py, pz, α, β, γ, pα, pβ, pγ = [sol[i, :] for i in 1:size(sol)
 p1 = plot(t, [x y z], label=["x(t)" "y(t)" "z(t)"], linecolor=[:blue :red :green],link=:all, xlabel="time (μs)", ylabel="Position (μm)", framestyle=:box, grid=true)
 p2 = plot(t, [pz px py], label=["pz(t)" "px(t)" "py(t)"], linecolor=[:green :blue :red],link=:all, xlabel="time (μs)", ylabel="Momenum", framestyle=:box, grid=true)
 p3 = plot(t, E, xlabel="time (μs)", ylabel="Energy / kb T", label="E(t)", framestyle=:box, grid=true, legend=false)
-p4 = plot(t, [α β γ], label=["α(t)" "β(t)" "γ(t)"], linecolor=[:blue :red :green], link=:all, linestyle=:dash, xlabel="time (μs)", ylabel="Angle (rad)", framestyle=:box, grid=true)
+p4 = plot(t, [α/pi β/pi], label=["α(t)" "β(t)" "γ(t)"], linecolor=[:blue :red :green], link=:all, linestyle=:dash, xlabel="time (μs)", ylabel="Angle (rad)", framestyle=:box, grid=true)
 p5 = plot(t, [pα pβ pγ], label=["pα(t)" "pβ(t)" "pγ(t)"], linecolor=[:blue :red :green], link=:all, linestyle=:dash, xlabel="time (μs)", ylabel="Angular Momentum", framestyle=:box, grid=true)
+p6 = plot(t, γ, label="γ(t)", linecolor=:green, link=:all, linestyle=:dash, xlabel="time (μs)", ylabel="Angle (rad)", framestyle=:box, grid=true)
 
 # Display the combined plot
-combined_plot = plot(p1, p2, p3, p4, p5, layout=(2, 3), size=(1100, 700), link   = :x, margin = 5Plots.mm)
+combined_plot = plot(p1, p2, p3, p4, p5, p6, layout=(2, 3), size=(1100, 700), link   = :x, margin = 5Plots.mm)
 display(combined_plot)
 
 # ----------------------------------------------#
